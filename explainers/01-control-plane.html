@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kubernetes Control Plane — How It Actually Works</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #f78166;
+    --accent4: #d2a8ff;
+    --accent5: #ffa657;
+    --warn: #f0883e;
+    --tag-bg: #1f2937;
+    --code-bg: #1c2128;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.7;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 24px 100px;
+  }
+
+  h1 { font-size: 2rem; font-weight: 700; color: var(--accent); margin-bottom: 8px; }
+  h2 { font-size: 1.4rem; font-weight: 600; color: var(--text); margin: 48px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1.1rem; font-weight: 600; color: var(--accent4); margin: 28px 0 10px; }
+  p { margin-bottom: 16px; color: var(--text); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: var(--text); font-weight: 600; }
+
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin-bottom: 40px; }
+
+  code {
+    font-family: 'SF Mono', 'Fira Code', Consolas, 'Courier New', monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: var(--accent5);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text);
+  }
+
+  .callout {
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 24px 0;
+    border-left: 4px solid;
+  }
+  .callout.insight { background: #0d2137; border-color: var(--accent); }
+  .callout.try { background: #0d2a0d; border-color: var(--accent2); }
+  .callout.warn { background: #2a1a0d; border-color: var(--warn); }
+  .callout.nvidia { background: #1a1a2e; border-color: var(--accent4); }
+
+  .callout-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .callout.insight .callout-label { color: var(--accent); }
+  .callout.try .callout-label { color: var(--accent2); }
+  .callout.warn .callout-label { color: var(--warn); }
+  .callout.nvidia .callout-label { color: var(--accent4); }
+
+  .citation {
+    font-size: 0.78rem;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+    padding-top: 6px;
+  }
+  .citation a { color: var(--muted); }
+  .citation a:hover { color: var(--accent); }
+
+  /* Architecture diagram */
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin: 32px 0;
+    overflow-x: auto;
+  }
+
+  .diagram svg {
+    display: block;
+    margin: 0 auto;
+    max-width: 100%;
+  }
+
+  /* Component cards */
+  .component-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 20px 0;
+  }
+  @media (max-width: 600px) { .component-grid { grid-template-columns: 1fr; } }
+
+  .component-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+  }
+
+  .component-card .name {
+    font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .component-card .name.cp { color: var(--accent); }
+  .component-card .name.node { color: var(--accent2); }
+  .component-card p { font-size: 0.9rem; color: var(--muted); margin: 0; }
+
+  /* Step-by-step trace */
+  .trace { margin: 24px 0; }
+
+  .trace-step {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 4px;
+    cursor: pointer;
+  }
+
+  .trace-step:hover .step-body { background: var(--surface2); }
+
+  .step-number {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    background: var(--accent);
+    color: #000;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-top: 10px;
+  }
+
+  .step-body {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    transition: background 0.15s;
+  }
+
+  .step-title {
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0;
+  }
+
+  .step-detail {
+    font-size: 0.9rem;
+    color: var(--muted);
+    margin-top: 6px;
+    display: none;
+  }
+
+  .step-detail.open { display: block; }
+
+  .connector {
+    width: 32px;
+    display: flex;
+    justify-content: center;
+  }
+  .connector::before {
+    content: '';
+    display: block;
+    width: 2px;
+    height: 20px;
+    background: var(--border);
+    margin: 0 auto;
+  }
+
+  /* Quiz */
+  .quiz {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 40px 0;
+  }
+
+  .quiz h3 { color: var(--accent5); margin-top: 0; }
+
+  .question { margin-bottom: 28px; }
+  .question p { font-weight: 600; margin-bottom: 12px; color: var(--text); }
+
+  .options { display: flex; flex-direction: column; gap: 8px; }
+
+  .option {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-size: 0.92rem;
+    color: var(--text);
+    transition: border-color 0.15s, background 0.15s;
+    text-align: left;
+    width: 100%;
+  }
+
+  .option:hover { border-color: var(--accent); }
+  .option.correct { border-color: var(--accent2); background: #0d2a0d; color: var(--accent2); }
+  .option.wrong { border-color: var(--accent3); background: #2a0d0d; color: var(--accent3); }
+
+  .feedback {
+    font-size: 0.88rem;
+    margin-top: 10px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    display: none;
+  }
+  .feedback.show { display: block; }
+  .feedback.ok { background: #0d2a0d; color: var(--accent2); }
+  .feedback.bad { background: #2a0d0d; color: var(--accent3); }
+
+  /* Table of contents */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 32px 0;
+  }
+  .toc h4 { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+  .toc ol { padding-left: 20px; }
+  .toc li { margin-bottom: 6px; font-size: 0.95rem; }
+
+  /* Tag chips */
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2px 10px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-right: 6px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Kubernetes Control Plane</h1>
+<p class="subtitle">How your cluster actually works — what happens when you run <code>kubectl apply</code></p>
+
+<div class="toc">
+  <h4>In this explainer</h4>
+  <ol>
+    <li><a href="#cluster-anatomy">Cluster anatomy: control plane vs worker nodes</a></li>
+    <li><a href="#control-plane">The four control plane components</a></li>
+    <li><a href="#worker-node">The two worker node agents</a></li>
+    <li><a href="#reconciliation">The reconciliation loop — the core mental model</a></li>
+    <li><a href="#trace">Step-by-step: what happens when you run <code>kubectl apply</code></a></li>
+    <li><a href="#quiz">Quiz — test your understanding</a></li>
+  </ol>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2 id="cluster-anatomy">1. Cluster anatomy</h2>
+
+<p>A Kubernetes cluster is a set of machines split into two roles: the <strong>control plane</strong> and <strong>worker nodes</strong>.</p>
+
+<ul style="margin: 0 0 16px 24px; color: var(--text);">
+  <li style="margin-bottom: 8px;">The <strong>control plane</strong> is the brain. It holds all desired state, makes scheduling decisions, and runs the control loops that keep actual state matching desired state. It never runs your application containers.</li>
+  <li style="margin-bottom: 8px;"><strong>Worker nodes</strong> are the muscles. They run your Pods — the actual containers. Each node runs two Kubernetes agents that talk back to the control plane.</li>
+</ul>
+
+<div class="diagram">
+  <svg width="780" height="380" viewBox="0 0 780 380" xmlns="http://www.w3.org/2000/svg" style="max-width:100%">
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#58a6ff" opacity="0.6"/>
+      </marker>
+      <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#3fb950" opacity="0.6"/>
+      </marker>
+    </defs>
+
+    <!-- Control plane box -->
+    <rect x="20" y="20" width="340" height="340" rx="12" fill="#0d2137" stroke="#58a6ff" stroke-width="1.5"/>
+    <text x="190" y="48" text-anchor="middle" fill="#58a6ff" font-size="13" font-weight="700" font-family="system-ui">CONTROL PLANE</text>
+
+    <!-- etcd -->
+    <rect x="44" y="64" width="140" height="72" rx="8" fill="#161b22" stroke="#d2a8ff" stroke-width="1.2"/>
+    <text x="114" y="88" text-anchor="middle" fill="#d2a8ff" font-size="11" font-weight="700" font-family="monospace">etcd</text>
+    <text x="114" y="108" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Distributed key-value</text>
+    <text x="114" y="123" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">store — source of truth</text>
+
+    <!-- API server -->
+    <rect x="196" y="64" width="140" height="72" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.2"/>
+    <text x="266" y="88" text-anchor="middle" fill="#58a6ff" font-size="11" font-weight="700" font-family="monospace">kube-apiserver</text>
+    <text x="266" y="108" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">REST API front door.</text>
+    <text x="266" y="123" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Reads/writes etcd only.</text>
+
+    <!-- Scheduler -->
+    <rect x="44" y="156" width="140" height="72" rx="8" fill="#161b22" stroke="#ffa657" stroke-width="1.2"/>
+    <text x="114" y="180" text-anchor="middle" fill="#ffa657" font-size="11" font-weight="700" font-family="monospace">kube-scheduler</text>
+    <text x="114" y="200" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Picks a Node for each</text>
+    <text x="114" y="215" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">unscheduled Pod.</text>
+
+    <!-- Controller manager -->
+    <rect x="196" y="156" width="140" height="72" rx="8" fill="#161b22" stroke="#f78166" stroke-width="1.2"/>
+    <text x="266" y="176" text-anchor="middle" fill="#f78166" font-size="11" font-weight="700" font-family="monospace">controller-manager</text>
+    <text x="266" y="196" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Runs all control loops:</text>
+    <text x="266" y="211" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">ReplicaSet, HPA, Node…</text>
+
+    <!-- kubectl label -->
+    <rect x="80" y="268" width="180" height="40" rx="8" fill="#0d2137" stroke="#58a6ff" stroke-width="0.8" stroke-dasharray="4,3"/>
+    <text x="170" y="291" text-anchor="middle" fill="#58a6ff" font-size="11" font-family="monospace">kubectl (your CLI)</text>
+    <text x="170" y="306" text-anchor="middle" fill="#8b949e" font-size="9" font-family="system-ui">sends HTTPS to kube-apiserver</text>
+
+    <!-- Arrows: kubectl → apiserver -->
+    <line x1="260" y1="268" x2="266" y2="230" stroke="#58a6ff" stroke-width="1.2" stroke-dasharray="4,3" opacity="0.5" marker-end="url(#arr)"/>
+    <!-- Arrows: apiserver ↔ etcd -->
+    <line x1="196" y1="100" x2="184" y2="100" stroke="#d2a8ff" stroke-width="1.2" opacity="0.5" marker-end="url(#arr)"/>
+    <line x1="184" y1="108" x2="196" y2="108" stroke="#d2a8ff" stroke-width="1.2" opacity="0.5" marker-end="url(#arr)"/>
+    <!-- Arrows: scheduler → apiserver (watch) -->
+    <line x1="152" y1="180" x2="196" y2="180" stroke="#ffa657" stroke-width="1.2" opacity="0.5" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+    <!-- Arrows: controller-manager → apiserver (watch) -->
+    <line x1="266" y1="156" x2="266" y2="136" stroke="#f78166" stroke-width="1.2" opacity="0.5" stroke-dasharray="3,2" marker-end="url(#arr)"/>
+
+    <!-- Worker Node 1 -->
+    <rect x="400" y="20" width="180" height="210" rx="12" fill="#0d2a0d" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="490" y="48" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700" font-family="system-ui">WORKER NODE 1</text>
+
+    <rect x="420" y="60" width="140" height="60" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="490" y="84" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700" font-family="monospace">kubelet</text>
+    <text x="490" y="102" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Talks to API server.</text>
+    <text x="490" y="116" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Starts/stops containers.</text>
+
+    <rect x="420" y="132" width="140" height="60" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="490" y="154" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700" font-family="monospace">kube-proxy</text>
+    <text x="490" y="172" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Manages iptables rules</text>
+    <text x="490" y="186" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">for Services.</text>
+
+    <!-- Pods -->
+    <rect x="420" y="204" width="62" height="18" rx="4" fill="#0f2a1a" stroke="#3fb950" stroke-width="0.8"/>
+    <text x="451" y="217" text-anchor="middle" fill="#3fb950" font-size="9" font-family="monospace">Pod</text>
+    <rect x="490" y="204" width="62" height="18" rx="4" fill="#0f2a1a" stroke="#3fb950" stroke-width="0.8"/>
+    <text x="521" y="217" text-anchor="middle" fill="#3fb950" font-size="9" font-family="monospace">Pod</text>
+
+    <!-- Worker Node 2 -->
+    <rect x="592" y="20" width="180" height="210" rx="12" fill="#0d2a0d" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="682" y="48" text-anchor="middle" fill="#3fb950" font-size="13" font-weight="700" font-family="system-ui">WORKER NODE 2</text>
+
+    <rect x="612" y="60" width="140" height="60" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="682" y="84" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700" font-family="monospace">kubelet</text>
+    <text x="682" y="102" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Talks to API server.</text>
+    <text x="682" y="116" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Starts/stops containers.</text>
+
+    <rect x="612" y="132" width="140" height="60" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="682" y="154" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="700" font-family="monospace">kube-proxy</text>
+    <text x="682" y="172" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">Manages iptables rules</text>
+    <text x="682" y="186" text-anchor="middle" fill="#8b949e" font-size="10" font-family="system-ui">for Services.</text>
+
+    <rect x="612" y="204" width="62" height="18" rx="4" fill="#0f2a1a" stroke="#3fb950" stroke-width="0.8"/>
+    <text x="643" y="217" text-anchor="middle" fill="#3fb950" font-size="9" font-family="monospace">Pod</text>
+
+    <!-- Arrows: apiserver → kubelets -->
+    <line x1="360" y1="120" x2="416" y2="90" stroke="#58a6ff" stroke-width="1.2" opacity="0.4" marker-end="url(#arr)"/>
+    <line x1="360" y1="120" x2="608" y2="90" stroke="#58a6ff" stroke-width="1.2" opacity="0.4" marker-end="url(#arr)"/>
+
+    <!-- Central dot on apiserver right edge -->
+    <circle cx="360" cy="120" r="3" fill="#58a6ff" opacity="0.7"/>
+
+    <!-- Legend -->
+    <text x="400" y="268" fill="#8b949e" font-size="10" font-family="system-ui">All components communicate through</text>
+    <text x="400" y="282" fill="#8b949e" font-size="10" font-family="system-ui">kube-apiserver — nobody reads etcd directly.</text>
+    <text x="400" y="306" fill="#8b949e" font-size="10" font-family="system-ui">Kubelets watch API server; API server watches etcd.</text>
+    <text x="400" y="320" fill="#8b949e" font-size="10" font-family="system-ui">The entire system is event-driven.</text>
+  </svg>
+</div>
+
+<div class="callout insight">
+  <div class="callout-label">Key insight</div>
+  <strong>etcd is the only database.</strong> All cluster state — every Pod, every Deployment, every Service — lives in etcd as key-value pairs. No other component stores any state of its own. This is why you can restart any control plane component and it picks up exactly where it left off.
+  <div class="citation">→ <a href="https://kubernetes.io/docs/concepts/overview/components/" target="_blank">kubernetes.io — Cluster Components</a></div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2 id="control-plane">2. The four control plane components</h2>
+
+<div class="component-grid">
+  <div class="component-card">
+    <div class="name cp">kube-apiserver</div>
+    <p>The only door into the cluster. Every kubectl command, every controller, every kubelet — all talk to the API server over HTTPS. It validates objects, enforces authorization (RBAC), and persists state to etcd. Nothing else reads or writes etcd directly.</p>
+  </div>
+  <div class="component-card">
+    <div class="name cp">etcd</div>
+    <p>A distributed, consistent key-value store. Holds the entire desired and current state of the cluster. Typically 3 or 5 instances for high availability (uses the Raft consensus protocol). Losing etcd without a backup means losing the entire cluster state.</p>
+  </div>
+  <div class="component-card">
+    <div class="name cp">kube-scheduler</div>
+    <p>Watches for Pods that have no Node assigned. For each such Pod it scores all available Nodes (taking into account resource requests, node capacity, affinity rules, taints/tolerations) and writes the chosen Node back to the API server. It does not start the Pod itself.</p>
+  </div>
+  <div class="component-card">
+    <div class="name cp">kube-controller-manager</div>
+    <p>A single binary that runs many controllers in parallel. Each controller watches the API server for changes to objects it cares about and takes action to reconcile actual state toward desired state. Examples: the ReplicaSet controller, the Deployment controller, the HPA controller, the Node controller (evicts Pods from dead nodes).</p>
+  </div>
+</div>
+
+<div class="callout insight">
+  <div class="callout-label">Why combine all controllers into one binary?</div>
+  In theory, each controller could be a separate process. In practice, combining them into <code>kube-controller-manager</code> reduces operational complexity. Separating them is possible and used in some custom setups, but the default binary is one process with many goroutines running in parallel.
+  <div class="citation">→ <a href="https://kubernetes.io/docs/concepts/architecture/controller/" target="_blank">kubernetes.io — Controller pattern</a></div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2 id="worker-node">3. The two worker node agents</h2>
+
+<div class="component-grid">
+  <div class="component-card">
+    <div class="name node">kubelet</div>
+    <p>An agent running on every worker node. It watches the API server for Pods assigned to its node. When one appears, it instructs the container runtime (typically <code>containerd</code>) to pull the image and start the container. It also runs liveness and readiness probes and reports Pod status back to the API server.</p>
+  </div>
+  <div class="component-card">
+    <div class="name node">kube-proxy</div>
+    <p>Also runs on every node. It watches the API server for Service and Endpoint objects and updates the node's <code>iptables</code> (or <code>ipvs</code>) rules accordingly. This is how a Service's virtual IP gets routed to actual Pod IPs. It does not proxy network packets at the application layer — it sets up kernel-level rules and then gets out of the way.</p>
+  </div>
+</div>
+
+<div class="callout try">
+  <div class="callout-label">Try this</div>
+  On your Minikube cluster, SSH in and look at the running processes:
+  <pre><code>minikube ssh
+ps aux | grep kubelet
+ps aux | grep kube-proxy</code></pre>
+  You'll see both processes running. Notice <code>kubelet</code> has a <code>--config</code> flag pointing to its config file, and various flags that tell it which API server to talk to.
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2 id="reconciliation">4. The reconciliation loop — the core mental model</h2>
+
+<p>Every controller in Kubernetes follows the same pattern. It is sometimes called the <strong>control loop</strong> or <strong>reconciliation loop</strong>:</p>
+
+<pre><code>loop:
+  desired  = read desired state from API server (etcd)
+  actual   = observe current state of the world
+  if desired != actual:
+      take action to move actual toward desired
+  sleep briefly, repeat</code></pre>
+
+<p>This is the single most important concept in Kubernetes. It is what makes the system <em>self-healing</em>:</p>
+
+<ul style="margin: 0 0 16px 24px; color: var(--text);">
+  <li style="margin-bottom:8px;">You delete a Pod manually → the ReplicaSet controller notices the actual count is below desired → it creates a replacement Pod. You never told it to. It just <em>noticed</em> and <em>fixed it</em>.</li>
+  <li style="margin-bottom:8px;">A node crashes → the Node controller marks it <code>NotReady</code> → after a timeout, Pods on that node are evicted and rescheduled on healthy nodes.</li>
+  <li style="margin-bottom:8px;">CPU spikes above 60% → the HPA controller notices → it writes a higher <code>replicas</code> count to the Deployment → the ReplicaSet controller creates new Pods.</li>
+</ul>
+
+<div class="callout insight">
+  <div class="callout-label">Kubernetes is declarative, not imperative</div>
+  You tell Kubernetes <em>what you want</em>, not <em>how to achieve it</em>. The reconciliation loops figure out the "how". This is the fundamental reason why Kubernetes manifests look like descriptions of state (<code>replicas: 2</code>) rather than commands (<code>start 2 pods</code>).
+  <div class="citation">→ <a href="https://kubernetes.io/docs/concepts/architecture/controller/" target="_blank">kubernetes.io — Controller pattern</a></div>
+</div>
+
+<div class="callout nvidia">
+  <div class="callout-label">NVIDIA interview angle</div>
+  At NVIDIA's scale, this matters enormously. If a GPU node fails mid-training, Kubernetes detects the node failure, reschedules the workload, and maintains the declared replica count — without human intervention. Understanding the reconciliation loop is what lets you reason about <em>why</em> Kubernetes is resilient, not just that it is.
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2 id="trace">5. Step-by-step: what happens when you run <code>kubectl apply -f deployment.yaml</code></h2>
+
+<p>Let's trace your <code>ml-inference</code> Deployment through the entire system. Click each step to expand the detail.</p>
+
+<div class="trace" id="trace-container">
+
+  <div class="trace-step" onclick="toggle(0)">
+    <div class="step-number">1</div>
+    <div class="step-body">
+      <p class="step-title">kubectl serializes the YAML and sends it to kube-apiserver over HTTPS</p>
+      <div class="step-detail" id="step-0">
+        <code>kubectl</code> reads your YAML file, converts it to JSON, and sends a <code>POST</code> (if new) or <code>PATCH</code> (if updating) request to the API server at something like <code>https://&lt;cluster-ip&gt;/apis/apps/v1/namespaces/default/deployments</code>. Your <code>~/.kube/config</code> file holds the cluster address and your credentials.
+      </div>
+    </div>
+  </div>
+  <div class="connector"><div></div></div>
+
+  <div class="trace-step" onclick="toggle(1)">
+    <div class="step-number">2</div>
+    <div class="step-body">
+      <p class="step-title">kube-apiserver validates and persists the Deployment to etcd</p>
+      <div class="step-detail" id="step-1">
+        The API server first authenticates you, then checks RBAC (are you allowed to create Deployments?), then validates the object (are all required fields present? are the values legal?). If everything passes, it writes the Deployment object into etcd. It also <strong>sets a unique <code>resourceVersion</code></strong> on the object — a monotonically increasing number used for optimistic concurrency.
+      </div>
+    </div>
+  </div>
+  <div class="connector"><div></div></div>
+
+  <div class="trace-step" onclick="toggle(2)">
+    <div class="step-number">3</div>
+    <div class="step-body">
+      <p class="step-title">The Deployment controller (inside kube-controller-manager) is notified</p>
+      <div class="step-detail" id="step-2">
+        All controllers maintain a <strong>watch</strong> on the API server for their resource type. A watch is a long-lived HTTP connection that streams events (Added, Modified, Deleted) as they happen in etcd. The Deployment controller sees the new Deployment event and wakes up.
+      </div>
+    </div>
+  </div>
+  <div class="connector"><div></div></div>
+
+  <div class="trace-step" onclick="toggle(3)">
+    <div class="step-number">4</div>
+    <div class="step-body">
+      <p class="step-title">The Deployment controller creates a ReplicaSet</p>
+      <div class="step-detail" id="step-3">
+        The Deployment controller compares desired state (your Deployment spec) with actual state (no ReplicaSet exists yet). It creates a <strong>ReplicaSet</strong> object via the API server, which is persisted to etcd. The ReplicaSet has a Pod template copied from the Deployment, and <code>replicas: 2</code>. The Deployment controller itself stops here — it has done its job.
+      </div>
+    </div>
+  </div>
+  <div class="connector"><div></div></div>
+
+  <div class="trace-step" onclick="toggle(4)">
+    <div class="step-number">5</div>
+    <div class="step-body">
+      <p class="step-title">The ReplicaSet controller creates two Pod objects</p>
+      <div class="step-detail" id="step-4">
+        The ReplicaSet controller watches for ReplicaSet objects. It sees the new one, counts matching Pods (zero), and creates two <strong>Pod objects</strong> via the API server. These Pods exist in etcd but have <strong>no <code>nodeName</code></strong> set — they are not yet scheduled to any node. They are in the <code>Pending</code> phase.
+      </div>
+    </div>
+  </div>
+  <div class="connector"><div></div></div>
+
+  <div class="trace-step" onclick="toggle(5)">
+    <div class="step-number">6</div>
+    <div class="step-body">
+      <p class="step-title">kube-scheduler assigns each Pod to a Node</p>
+      <div class="step-detail" id="step-5">
+        The scheduler watches for Pods with <code>nodeName == ""</code>. For each unscheduled Pod it runs a two-phase algorithm:
+        <ul style="margin: 8px 0 0 20px; color: var(--muted);">
+          <li><strong>Filter</strong>: eliminate Nodes that can't run the Pod (not enough CPU/memory to satisfy requests, taints that the Pod doesn't tolerate, etc.)</li>
+          <li><strong>Score</strong>: rank the remaining Nodes by various criteria (available resources, pod affinity, spread constraints)</li>
+        </ul>
+        <br>It then writes the chosen Node name into the Pod's <code>spec.nodeName</code> field via the API server. The scheduler does nothing else — it does not contact the node directly.
+      </div>
+    </div>
+  </div>
+  <div class="connector"><div></div></div>
+
+  <div class="trace-step" onclick="toggle(6)">
+    <div class="step-number">7</div>
+    <div class="step-body">
+      <p class="step-title">The kubelet on the chosen Node starts the container</p>
+      <div class="step-detail" id="step-6">
+        Each kubelet watches for Pods with its own <code>nodeName</code>. When it sees its Pod, it:
+        <ol style="margin: 8px 0 0 20px; color: var(--muted);">
+          <li>Tells the container runtime (containerd) to pull the image (in your case: <code>ml-interface:v1</code>, from local cache since <code>imagePullPolicy: Never</code>)</li>
+          <li>Creates and starts the container with the specified resource limits</li>
+          <li>Begins running the liveness and readiness probes on their configured intervals</li>
+          <li>Reports Pod status back to the API server (phase transitions: Pending → Running)</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+  <div class="connector"><div></div></div>
+
+  <div class="trace-step" onclick="toggle(7)">
+    <div class="step-number">8</div>
+    <div class="step-body">
+      <p class="step-title">kube-proxy updates iptables rules for your Service</p>
+      <div class="step-detail" id="step-7">
+        When you also applied <code>service.yaml</code>, the API server created an <code>Endpoints</code> object that tracks which Pod IPs are currently <em>Ready</em>. kube-proxy watches Endpoints and updates the node's <code>iptables</code> rules so that traffic sent to the Service's ClusterIP gets load-balanced to Pod IPs. Once your readiness probe returns 200, the Pod IP appears in Endpoints and traffic begins flowing to it.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="callout insight">
+  <div class="callout-label">The key pattern</div>
+  Notice that <strong>no component directly commanded another component</strong>. kubectl wrote to etcd (via API server). Each controller woke up because it noticed something changed. The kubelet woke up because it noticed a Pod assigned to it. This is <strong>level-triggered</strong>, <strong>watch-based</strong> architecture — components react to state, not to messages. It's why the system recovers gracefully from crashes: when a component restarts, it re-reads the current state and picks up from there.
+  <div class="citation">→ <a href="https://kubernetes.io/blog/2018/10/22/metadata-transfer/" target="_blank">Kubernetes blog: The mechanics of Kubernetes</a></div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2>6. The watch mechanism — how components get notified</h2>
+
+<p>Every controller uses the API server's <strong>watch</strong> API. Under the hood:</p>
+
+<pre><code>GET /apis/apps/v1/deployments?watch=true
+# → returns a long-lived HTTP chunked response
+# → each chunk is a JSON event: {"type": "ADDED", "object": {...}}
+#                              {"type": "MODIFIED", "object": {...}}
+#                              {"type": "DELETED", "object": {...}}</code></pre>
+
+<p>The API server translates etcd watch events into these HTTP events. Every controller, every kubelet, runs such a watch. When the connection drops (network blip, restart), the client reconnects and uses its last known <code>resourceVersion</code> to get any events it missed.</p>
+
+<div class="callout try">
+  <div class="callout-label">Try this — watch in real time</div>
+  Open two terminal windows. In the first:
+  <pre><code>kubectl get pods -w</code></pre>
+  In the second, delete a Pod:
+  <pre><code>kubectl delete pod &lt;pod-name&gt;</code></pre>
+  Watch the first terminal: you'll see the Pod transition through Terminating, then a new Pod appear through Pending → ContainerCreating → Running. That is the reconciliation loop executing in real time.
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2 id="quiz">Quiz — test your understanding</h2>
+
+<div class="quiz">
+  <h3>Check yourself</h3>
+
+  <div class="question" id="q0">
+    <p>1. You manually delete a Pod that belongs to a Deployment. Who creates the replacement Pod?</p>
+    <div class="options">
+      <button class="option" onclick="answer(0, 0, false)">A. kube-scheduler — it detects the missing Pod and schedules a new one</button>
+      <button class="option" onclick="answer(0, 1, true)">B. The ReplicaSet controller — it notices the actual count is below desired and creates a new Pod object</button>
+      <button class="option" onclick="answer(0, 2, false)">C. kubelet — it notices the container died and restarts it</button>
+      <button class="option" onclick="answer(0, 3, false)">D. kube-apiserver — it automatically recreates the object</button>
+    </div>
+    <div class="feedback" id="f0-0">Wrong. The scheduler's job is to assign Pods to Nodes — it doesn't create Pods. Pods are created by controllers.</div>
+    <div class="feedback" id="f0-1">Correct! The ReplicaSet controller runs the reconciliation loop: it watches actual Pod count vs desired, and when they differ, it creates (or deletes) Pod <em>objects</em> via the API server. The scheduler then assigns them to Nodes, and the kubelet starts them.</div>
+    <div class="feedback" id="f0-2">Wrong. The kubelet handles containers on its own node. If the whole Pod is deleted (not just a container crash), the Pod object is gone from etcd and the kubelet stops tracking it entirely.</div>
+    <div class="feedback" id="f0-3">Wrong. The API server is passive — it stores and validates objects, it doesn't act on them.</div>
+  </div>
+
+  <div class="question" id="q1">
+    <p>2. What is the single source of truth for all cluster state?</p>
+    <div class="options">
+      <button class="option" onclick="answer(1, 0, false)">A. kube-apiserver's in-memory cache</button>
+      <button class="option" onclick="answer(1, 1, false)">B. Each kubelet's local state</button>
+      <button class="option" onclick="answer(1, 2, true)">C. etcd</button>
+      <button class="option" onclick="answer(1, 3, false)">D. The kube-controller-manager's internal database</button>
+    </div>
+    <div class="feedback" id="f1-0">Wrong. The API server does maintain a cache for performance, but it is derived from etcd and is not authoritative. If the API server restarts, it rebuilds its cache from etcd.</div>
+    <div class="feedback" id="f1-1">Wrong. Kubelets observe local reality and report to the API server, but the desired state lives in etcd.</div>
+    <div class="feedback" id="f1-2">Correct! etcd is the only persistent store in the control plane. All components are stateless except etcd. This is why etcd backups are so important — losing etcd without a backup means losing all cluster state.</div>
+    <div class="feedback" id="f1-3">Wrong. The controller manager has no database — it is stateless. It reads from and writes to the API server only.</div>
+  </div>
+
+  <div class="question" id="q2">
+    <p>3. After the scheduler assigns a Node to a Pod, what does the scheduler do next to start the container?</p>
+    <div class="options">
+      <button class="option" onclick="answer(2, 0, false)">A. It sends an SSH command to the Node to start the container</button>
+      <button class="option" onclick="answer(2, 1, false)">B. It calls the container runtime API on the chosen Node</button>
+      <button class="option" onclick="answer(2, 2, true)">C. Nothing — it writes the nodeName to the Pod and moves on</button>
+      <button class="option" onclick="answer(2, 3, false)">D. It notifies the kubelet directly via gRPC</button>
+    </div>
+    <div class="feedback" id="f2-0">Wrong. The scheduler never contacts Nodes directly. It only talks to the API server.</div>
+    <div class="feedback" id="f2-1">Wrong. The scheduler knows nothing about the container runtime. The kubelet handles the container runtime interaction.</div>
+    <div class="feedback" id="f2-2">Correct! The scheduler only writes one thing: the <code>spec.nodeName</code> field on the Pod object, via the API server. That's it. The kubelet on that Node is watching the API server, notices the Pod is now assigned to it, and takes it from there.</div>
+    <div class="feedback" id="f2-3">Wrong. No component notifies another component directly. All communication goes through the API server. This is what makes the system loosely coupled and resilient.</div>
+  </div>
+
+  <div class="question" id="q3">
+    <p>4. Your readiness probe is failing on a Pod. The liveness probe is still passing. What happens?</p>
+    <div class="options">
+      <button class="option" onclick="answer(3, 0, false)">A. The container is killed and restarted</button>
+      <button class="option" onclick="answer(3, 1, true)">B. The Pod is removed from the Service's Endpoints — it gets no traffic — but the container keeps running</button>
+      <button class="option" onclick="answer(3, 2, false)">C. The Pod is evicted from the Node and rescheduled</button>
+      <button class="option" onclick="answer(3, 3, false)">D. The HPA scales up to compensate</button>
+    </div>
+    <div class="feedback" id="f3-0">Wrong. Container restarts are triggered by the <em>liveness</em> probe failing, not the readiness probe.</div>
+    <div class="feedback" id="f3-1">Correct! The readiness probe controls whether a Pod receives traffic from a Service. When it fails, the kubelet updates the Pod's <code>Ready</code> condition to False, the Endpoints controller removes the Pod IP from the Service's Endpoints, and kube-proxy updates the iptables rules. The container keeps running — it just gets no new requests until it becomes Ready again.</div>
+    <div class="feedback" id="f3-2">Wrong. Eviction is triggered by Node pressure (out of memory, disk) or Node failure — not probe failure.</div>
+    <div class="feedback" id="f3-3">Wrong. The HPA scales based on metrics (CPU, memory, custom) — not on probe status.</div>
+  </div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════ -->
+<h2>What's next</h2>
+
+<p>You now understand the full internal architecture of a Kubernetes cluster. The logical next topics, in order of relevance to your NVIDIA interview:</p>
+
+<ol style="margin: 0 0 24px 24px; color: var(--text);">
+  <li style="margin-bottom: 10px;"><strong>Scheduling in depth</strong> — affinity, taints, tolerations, and GPU resource requests (<code>nvidia.com/gpu</code>). This is directly relevant to how NVIDIA deploys GPU workloads.</li>
+  <li style="margin-bottom: 10px;"><strong>StatefulSets</strong> — for distributed ML training jobs that require stable network identities and persistent storage.</li>
+  <li style="margin-bottom: 10px;"><strong>Persistent Volumes</strong> — how storage works in Kubernetes, critical for datasets and model checkpoints.</li>
+  <li style="margin-bottom: 10px;"><strong>RBAC</strong> — how permissions work, relevant to production cluster security.</li>
+</ol>
+
+<div class="callout try">
+  <div class="callout-label">Explore further</div>
+  To see the reconciliation loop in your own cluster, watch events in real time:
+  <pre><code>kubectl get events --watch -n default</code></pre>
+  Then in another terminal, try <code>kubectl scale deployment ml-inference --replicas=4</code>. You'll see the full chain: Deployment modified → ReplicaSet scaled → Pods created → scheduled → started.
+</div>
+
+<script>
+  function toggle(n) {
+    const el = document.getElementById('step-' + n);
+    el.classList.toggle('open');
+  }
+
+  function answer(qIdx, optIdx, correct) {
+    const qEl = document.getElementById('q' + qIdx);
+    const opts = qEl.querySelectorAll('.option');
+    const feedbacks = qEl.querySelectorAll('.feedback');
+
+    // Reset all
+    opts.forEach(o => o.classList.remove('correct', 'wrong'));
+    feedbacks.forEach(f => { f.classList.remove('show', 'ok', 'bad'); });
+
+    // Mark chosen
+    opts[optIdx].classList.add(correct ? 'correct' : 'wrong');
+
+    // Show feedback
+    const fb = document.getElementById('f' + qIdx + '-' + optIdx);
+    fb.classList.add('show', correct ? 'ok' : 'bad');
+  }
+</script>
+
+</body>
+</html>
